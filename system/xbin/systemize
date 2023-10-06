@@ -116,14 +116,14 @@ list_installed_apps() {
       fi
     fi
     rm $LISTFILE 2>>$LOG; app=(); app1=(); app2=();
-    for i in $($method | sed 's/.*://'); do
+    for i in $(pm list packages -3 | sed 's/package://g'); do
       h=$(((h+1)%4))
       Spinner "Loading Apps"
       if ! dumpsys package $i | grep -qEm1 -e "($detect)" - ; then
         app=${i##*/}
         package=$app
         package[c]=$package
-        dir_app[c]=/data/app/$app-*/base.apk
+        dir_app[c]=$(pm path $i | sed 's/package://g')
         $use_aapt && { app=$(aapt d badging ${dir_app[c]} | grep 'application-label:'); app=${app#*:}; }
         app1[c]=$(echo "$app" | tr ' ' '_' | tr -d "'")
         echo "app${c}^=${app1[c]}^=${dir_app[c]}^=${package[c]}^=" >> $LISTFILE
@@ -556,7 +556,7 @@ menu() {
 case "$1" in
   -a) shift
     for i in "$@"; do
-	  [ -d $SYSTEM/priv-app ] && systemize /system/priv-app "/data/app/${i}-*/base.apk" || systemize /system/app "/data/app/${i}-*/base.apk" "$i"
+	  [ -d $SYSTEM/priv-app ] && systemize /system/priv-app $(pm path $i | sed 's/package://g') || systemize /system/app $(pm path $i | sed 's/package://g') "$i"
 	  echo "$div"
 	done
 	exit;;
