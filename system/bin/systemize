@@ -1,22 +1,20 @@
 #!/system/bin/sh
 # Terminal Magisk Mod Template
 # by veez21 @ xda-developers
+# edit by @CH3NGYZ
 
-
-# Magisk Module ID **
-ID="terminal_systemizer"
+ID=terminal_systemizer_ch3ngyz
 
 # Detect root
 _name=$(basename $0)
 ls /data >/dev/null 2>&1 || { echo "$ID needs to run as root!"; echo "type 'su' then '$_name'"; exit 1; }
 
-# Magisk Mod Directory
-MOUNTPATH="/data/adb/modules"
-MODDIR="$MOUNTPATH/$ID"
+# KernleSU Mod Directory
+MODDIR=/data/adb/modules/$ID
 [ ! -d $MODDIR ] && { echo "Module not detected!"; exit 1; }
 
 # Load mod-util.sh
-. $MODDIR/mod-util.sh || exit $?
+. $MODDIR/utils/mod-util.sh || exit $?
 
 # Set Log Files
 mount -o remount,rw /cache 2>/dev/null
@@ -57,7 +55,7 @@ exit
 }
 
 use_aapt=false
-export PATH=$MODDIR:$PATH
+export PATH=$MODDIR:$MODDIR/utils:$PATH
 [[ "$(which aapt)" ]] && use_aapt=true
 sysapp=0
 privapp=0
@@ -105,7 +103,14 @@ fi
 free_space="$(df -m $MOUNTPATH | tail -n1 | awk '{print $4}')"
 total_space="$(df -m $MOUNTPATH | tail -n1 | awk '{print $2}')"
 
-# List installed apps
+SPIN_I=0
+Spinner() {
+  local msg="$1"
+  local spin='-\|/'
+  printf "\r%s %c" "$msg" "${spin:SPIN_I%${#spin}:1}"
+  SPIN_I=$(( (SPIN_I+1) % ${#spin} ))
+}
+
 list_installed_apps() {
   if $RESCAN; then
     if $se_set; then
@@ -115,23 +120,76 @@ list_installed_apps() {
         se_set=false
       fi
     fi
-    rm $LISTFILE 2>>$LOG; app=(); app1=(); app2=();
-    for i in $(pm list packages -3 | sed 's/package://g'); do
-      h=$(((h+1)%4))
-      Spinner "Loading Apps"
-      if ! dumpsys package $i | grep -qEm1 -e "($detect)" - ; then
-        app=${i##*/}
-        package=$app
-        package[c]=$package
-        dir_app[c]=$(pm path $i | sed 's/package://g')
-        $use_aapt && { app=$(aapt d badging ${dir_app[c]} | grep 'application-label:'); app=${app#*:}; }
-        app1[c]=$(echo "$app" | tr ' ' '_' | tr -d "'")
-        echo "app${c}^=${app1[c]}^=${dir_app[c]}^=${package[c]}^=" >> $LISTFILE
+
+    rm -f "$LISTFILE" 2>>"$LOG"
+    app1=()        # 原始应用名数组
+    package=()     # 包名数组
+    dir_app=()     # APK路径数组
+
+    packages=$(pm list packages -3 | sed 's/package://g')
+    total=$(echo "$packages" | wc -l)
+
+    count=0
+    c=0            # 有效应用下标
+    line_data=()   # 保存每行数据，排序后写文件
+
+    for i in $packages; do
+      count=$((count+1))
+      percent=$((count*100/total))
+
+      if ! dumpsys package "$i" | grep -qEm1 -e "($detect)" - ; then
+        # 获取 APK 路径
+        apk_path=$(pm path "$i" | sed -n '1p' | sed 's/package://g')
+        # 获取应用名
+        app="${i##*/}"
+        if $use_aapt; then
+          app=$(aapt d badging "$apk_path" | grep 'application-label:')
+          app=${app#*:}
+        fi
+        app_name=$(echo "$app" | tr ' ' '_' | tr -d "'")
+        pkg_name="$i"
+
+        # 如果应用名或路径或包名为空则跳过
+        if [ -z "$app_name" ] || [ -z "$apk_path" ] || [ -z "$pkg_name" ]; then
+          continue
+        fi
+
+        # 保存数组
+        app1[$c]="$app_name"
+        dir_app[$c]="$apk_path"
+        package[$c]="$pkg_name"
+        line_data[$c]="${app1[$c]}^=${dir_app[$c]}^=${package[$c]}"
         c=$((c+1))
       fi
+
+      Spinner "Loading Apps [$count/$total] ($percent%)"
     done
-    app2=($(echo "${app1[@]}" | sed "s/.*'//g"))
-    app=($(printf '%s\n' "${app2[@]}" | sort -f))
+
+    # 排序 app1 数组，同时重排 line_data
+    sorted_indices=($(for idx in "${!app1[@]}"; do
+        echo "$idx ${app1[$idx]}"
+    done | sort -k2 -f | awk '{print $1}'))
+
+    app=()
+    dir_app_sorted=()
+    package_sorted=()
+    line_data_sorted=()
+
+    for new_idx in "${!sorted_indices[@]}"; do
+      old_idx=${sorted_indices[$new_idx]}
+      app[$new_idx]="${app1[$old_idx]}"
+      dir_app_sorted[$new_idx]="${dir_app[$old_idx]}"
+      package_sorted[$new_idx]="${package[$old_idx]}"
+      line_data_sorted[$new_idx]="app${new_idx}^=${line_data[$old_idx]}"
+    done
+
+    # 写入 LISTFILE
+    printf '%s\n' "${line_data_sorted[@]}" > "$LISTFILE"
+
+    # 替换原数组
+    dir_app=("${dir_app_sorted[@]}")
+    package=("${package_sorted[@]}")
+
     RESCAN=false
     $se_set && setenforce 1
   fi
@@ -155,9 +213,10 @@ list_systemized_apps() {
 }
 
 get_cfg() {
-  APP_NAME=$(grep -wm1 "=${1}^" $LISTFILE | tr '^=' ' ' | awk '{print $2}') || abort "Package doesn't exist!"
-  DIR_APP=$(grep -wm1 "=${1}^" $LISTFILE | tr '^=' ' ' | awk '{print $3}') || abort "Package doesn't exist!"
-  PKG=$(grep -wm1 "=${1}^" $LISTFILE | tr '^=' ' ' | awk '{print $4}') || abort "Package doesn't exist!"
+  LINE=$(grep -wm1 "^$1" "$LISTFILE") || abort "Package doesn't exist!"
+  APP_NAME=$(echo "$LINE" | awk -F'\\^=' '{print $2}')
+  DIR_APP=$(echo "$LINE" | awk -F'\\^=' '{print $3}')
+  PKG=$(echo "$LINE" | awk -F'\\^=' '{print $4}')
 }
 
 # Systemize function
@@ -289,11 +348,17 @@ enter_apk_name() {
   echo " x - ${Bl}Back to Menu${N}"
   echo -n " > "
   read apklabel
-  if [ ! "$apklabel" ]; then
+  if [ -z "$apklabel" ]; then
     abort "error"
   elif [ "$apklabel" == "x" ]; then
     menu
   fi
+
+  apkpath=$(pm path "$apklabel" | awk -F: '{print $2}')
+  if [ -z "$apkpath" ]; then
+    abort "Cannot find APK for $apklabel"
+  fi
+
   if [ $privapp == 1 ] && [ $sysapp == 1 ]; then
     echo " Where to install?"
     echo -n " < 1 - $SYSTEM/app | 2 - $SYSTEM/priv-app | 0 - cancel > : "
@@ -312,7 +377,8 @@ enter_apk_name() {
   else
     installdir="app"
   fi
-  systemize /system/$installdir /data/app/${apklabel}-*/base.apk
+
+  systemize "/system/$installdir" "$apkpath"
   [ $? -ne 0 ] && abort "Failed!"
 }
 
@@ -400,7 +466,7 @@ menu_list_systemized_apps() {
       echo "$div"
       i=$((i-1))
       echo "Systemizing ${W}${app[i]}${N}" | tr '_' ' '
-      get_cfg ${app[i]}
+      get_cfg app$i
       echo -n " Checking APK directory"
       if [ -f $DIR_APP ]; then
         echo " - ${W}OK${N}"
@@ -534,7 +600,7 @@ menu() {
     echo " 4 - Revert Systemized Apps"
   fi
   echo " s - Set SELinux"
-  prandom " d - ${C}Donate${N}"
+  prandom " g - ${C}View my Github Profile${N}"
   echo " 0 - Exit"
   echo ""
   echo -n "[CHOICE]: "
@@ -545,11 +611,10 @@ menu() {
     3) enter_apk_dir; exit $?;;
     4) revert_apps; exit $?;;
 
-    d|D) am start https://paypal.me/veez21 >>$LOG 2>&1;;
-    logs) upload_logs;;
+    g|G) am start https://github.com/CH3NGYZ 2>&1;;
     s|S) set_selinux;;
     0) exit;;
-    *) echo "Invalid!"; exit 1;;
+    *) echo "Invalid!"; sleep 1; menu;;
   esac
 }
 

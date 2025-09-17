@@ -45,6 +45,8 @@ set_busybox() {
 _busybox=false
 if $_busybox; then
   true
+elif [ -x /data/adb/ksu/bin/busybox ]; then
+  _bb=/data/adb/ksu/bin/busybox
 elif [ -x $SYSTEM2/xbin/busybox ]; then
   _bb=$SYSTEM2/xbin/busybox
 elif [ -x $SYSTEM2/bin/busybox ]; then
